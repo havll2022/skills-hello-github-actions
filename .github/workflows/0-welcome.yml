@@ -1,91 +1,70 @@
-name: Step 0, Welcome
+name: CI (Windows)
 
-# This step triggers after the learner creates a new repository from the template.
-# This workflow updates from step 0 to step 1.
-
-# This will run every time we create push a commit to `main`.
-# Reference: https://docs.github.com/en/actions/learn-github-actions/events-that-trigger-workflows
 on:
-  workflow_dispatch:
   push:
-    branches:
-      - main
+    paths:
+    - '.github/workflows/**'
+    - '3rdparty/**'
+    - 'scripts/**'
+    - 'src/**'
+    - 'COPYING'
+    - 'makefile'
+  pull_request:
+    paths:
+    - '.github/workflows/**'
+    - '3rdparty/**'
+    - 'scripts/**'
+    - 'src/**'
+    - 'COPYING'
+    - 'makefile'
 
-# Reference: https://docs.github.com/en/actions/security-guides/automatic-token-authentication
 permissions:
-  # Need `contents: read` to checkout the repository.
-  # Need `contents: write` to update the step metadata.
-  contents: write
+  contents: read
 
 jobs:
-  # Get the current step to only run the main job when the learner is on the same step.
-  get_current_step:
-    name: Check current step number
-    runs-on: ubuntu-latest
+  build-windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    strategy:
+      matrix:
+        compiler: [gcc, clang]
+        include:
+          - compiler: gcc
+            cc: gcc
+            cxx: g++
+            subtarget: mame
+            executable: mame
+          - compiler: clang
+            cc: clang
+            cxx: clang++
+            subtarget: tiny
+            executable: mametiny
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-      - id: get_step
-        run: |
-          echo "current_step=$(cat ./.github/steps/-step.txt)" >> $GITHUB_OUTPUT
-    outputs:
-      current_step: ${{ steps.get_step.outputs.current_step }}
-
-  on_start:
-    name: On start
-    needs: get_current_step
-
-    # We will only run this action when:
-    # 1. This repository isn't the template repository.
-    # 2. The step is currently 0.
-    # Reference: https://docs.github.com/en/actions/learn-github-actions/contexts
-    # Reference: https://docs.github.com/en/actions/learn-github-actions/expressions
-    if: >-
-      ${{ !github.event.repository.is_template
-          && needs.get_current_step.outputs.current_step == 0 }}
-
-    # We'll run Ubuntu for performance instead of Mac or Windows.
-    runs-on: ubuntu-latest
-
-    steps:
-      # We'll need to check out the repository so that we can edit the README.
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0 # Let's get all the branches.
-
-      # Make a branch, file, and commit for the learner.
-      - name: Prepare a branch, and file
-        run: |
-          echo "Make sure we are on step 0"
-          if [ "$(cat .github/steps/-step.txt)" != 0 ]
-          then
-            echo "Current step is not 0"
-            exit 0
-          fi
-
-          echo "Make a branch"
-          BRANCH=welcome-workflow
-          git checkout -b $BRANCH
-
-          echo "Make a commit"
-          git config user.name github-actions[bot]
-          git config user.email github-actions[bot]@users.noreply.github.com
-          git commit --allow-empty --message="Create an empty commit"
-
-          echo "Push"
-          git push --set-upstream origin $BRANCH
-
-          echo "Restore main"
-          git checkout main
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      # In README.md, switch step 0 for step 1.
-      - name: Update to step 1
-        uses: skills/action-update-step@v2
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          from_step: 0
-          to_step: 1
-          branch_name: welcome-workflow
+    - uses: msys2/setup-msys2@v2
+      with:
+        install: git make mingw-w64-x86_64-${{ matrix.compiler }} mingw-w64-x86_64-python mingw-w64-x86_64-lld mingw-w64-x86_64-llvm mingw-w64-x86_64-libc++
+    - uses: actions/checkout@main
+      with:
+        fetch-depth: 0
+    - name: Build
+      env:
+        MINGW64: "/mingw64"
+        OVERRIDE_AR: "llvm-ar"
+        OVERRIDE_CC: ${{ matrix.cc }}
+        OVERRIDE_CXX: ${{ matrix.cxx }}
+        ARCHOPTS: "-fuse-ld=lld"
+        SUBTARGET: ${{ matrix.subtarget }}
+        TOOLS: 1
+      run: make -j3
+    - name: Validate
+      run: ./${{ matrix.executable }}.exe -validate
+    - uses: actions/upload-artifact@main
+      with:
+        name: ${{ matrix.executable }}-windows-${{ matrix.compiler }}-${{ github.sha }}
+        path: |
+          ${{ matrix.executable }}.exe
+          chdman.exe
+          unidasm.exe
+        if-no-files-found: error
